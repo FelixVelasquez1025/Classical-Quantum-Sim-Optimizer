@@ -9,3 +9,6 @@ build/
 *.egg-info/
 .venv/
 .maturin/
+/target/
+/dqsim_profiles/
+/.pytest_cache/

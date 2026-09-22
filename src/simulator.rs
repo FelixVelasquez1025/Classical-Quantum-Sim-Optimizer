@@ -2,13 +2,13 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::codecs::{
-    parse_distributed_mode, parse_monolithic_mode, parse_mps_options, reject_monolithic_options,
-    DistributedSimulationMode, MonolithicSimulationMode,
+    parse_distributed_mode, parse_monolithic_mode, parse_mps_options, parse_statevector_options,
+    reject_monolithic_options, DistributedSimulationMode, MonolithicSimulationMode,
 };
 use crate::distributed::pblock::PBlockSimulator;
 use crate::monolithic::mps::MpsSimulator;
-use crate::monolithic::statevector::StatevectorSimulator;
 use crate::monolithic::stabilizer::StabilizerSimulator;
+use crate::monolithic::statevector::StatevectorSimulator;
 
 #[pyfunction]
 #[pyo3(signature = (circuit, mode="state_vector", seed=None, profile=false, **options))]
@@ -22,8 +22,8 @@ pub fn simulate_monolithic(
 ) -> PyResult<PyObject> {
     match parse_monolithic_mode(mode)? {
         MonolithicSimulationMode::StateVector => {
-            reject_monolithic_options(options, mode)?;
-            let sim = StatevectorSimulator::new(seed, profile);
+            let options = parse_statevector_options(options)?;
+            let sim = StatevectorSimulator::new(seed, profile, options.max_memory_mb, options.max_parallel_shots, options.sample_terminal)?;
             Ok(sim.simulate(py, circuit)?.into_py(py))
         }
         MonolithicSimulationMode::Mps => {
@@ -48,7 +48,7 @@ pub fn simulate_monolithic(
 #[pyo3(signature = (distributed, mode="p_block", seed=None))]
 pub fn simulate_distributed(
     py: Python,
-    distributed: &Bound<PyAny>,  // todo: tighten this
+    distributed: &Bound<PyAny>, // todo: tighten this
     mode: &str,
     seed: Option<u64>,
 ) -> PyResult<PyObject> {
@@ -73,8 +73,14 @@ pub fn simulate_monolithic_shots(
 ) -> PyResult<PyObject> {
     match parse_monolithic_mode(mode)? {
         MonolithicSimulationMode::StateVector => {
-            reject_monolithic_options(options, mode)?;
-            let sim = StatevectorSimulator::new(seed, false);
+            let options = parse_statevector_options(options)?;
+            let sim = StatevectorSimulator::new(
+                seed,
+                false,
+                options.max_memory_mb,
+                options.max_parallel_shots,
+                options.sample_terminal,
+            )?;
             sim.simulate_shots(py, circuit, shots, profile)
         }
         MonolithicSimulationMode::Mps => {

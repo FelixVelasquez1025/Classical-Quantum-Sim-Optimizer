@@ -16,6 +16,38 @@ pub(crate) struct MpsOptions {
     pub(crate) truncation_threshold: f64,
 }
 
+pub(crate) struct StatevectorOptions {
+    pub(crate) max_memory_mb: usize,
+    pub(crate) max_parallel_shots: Option<usize>,
+    pub(crate) sample_terminal: bool,
+}
+
+pub(crate) fn parse_statevector_options(
+    options: Option<&Bound<PyDict>>,
+) -> PyResult<StatevectorOptions> {
+    let mut result = StatevectorOptions {
+        max_memory_mb: 1024,
+        max_parallel_shots: None,
+        sample_terminal: true,
+    };
+    if let Some(options) = options {
+        for (key, value) in options.iter() {
+            let key: String = key.extract()?;
+            match key.as_str() {
+                "max_memory_mb" => result.max_memory_mb = value.extract()?,
+                "max_parallel_shots" => result.max_parallel_shots = value.extract()?,
+                "sample_terminal" => result.sample_terminal = value.extract()?,
+                _ => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "Unsupported statevector option {key:?}"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn parse_monolithic_mode(mode: &str) -> PyResult<MonolithicSimulationMode> {
     match mode.trim().to_ascii_lowercase().replace('-', "_").as_str() {
         "state_vector" | "statevector" | "sv" => Ok(MonolithicSimulationMode::StateVector),
