@@ -1,0 +1,50 @@
+[project]
+name = "dqsim"
+version = "0.1.2"
+description = "Native Rust statevector simulator for distributed quantum circuits"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Elie Ben-Shlomo", email = "categoricalsolutions@gmail.com" },
+]
+dependencies = [
+    "bosonic-model>=0.1.1,<0.2.0",
+    "bosonic-converters>=0.1.0,<0.2.0",
+    "numpy>=1.26",
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pyyaml>=6.0",
+    "qasmpi>=0.1.1",
+    "bosonic-model>=0.1.1,<0.2.0",
+    "bosonic-converters>=0.1.0,<0.2.0",
+    "bosonic-sdk>=0.1.7,<0.2.0",
+    "bosonic-disqco>=0.0.7,<0.1.0",
+    "qiskit-aer>=0.16",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple"
+explicit = true
+
+[tool.uv.sources]
+bosonic-model = { index = "testpypi" }
+bosonic-converters = { index = "testpypi" }
+bosonic-sdk = { index = "testpypi" }
+qasmpi = { index = "testpypi" }
+bosonic-disqco = { index = "testpypi" }
+
+[tool.maturin]
+module-name = "dqsim._core"
+python-tag = "abi3"

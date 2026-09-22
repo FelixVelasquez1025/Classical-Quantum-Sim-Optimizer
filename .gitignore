@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+build/
+.dist/
+*.so
+*.dylib
+*.egg-info/
+.venv/
+.maturin/
