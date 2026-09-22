@@ -5,6 +5,7 @@ Circuit inputs expose ``model_dump_json()`` using the register/instruction schem
 
 from ._core import (
     MpsSimulator,
+    MpsResult,
     PBlockResult,
     PBlockSimulator,
     SimulationProfile,
@@ -19,6 +20,7 @@ from ._core import (
 
 __all__ = [
     "MpsSimulator",
+    "MpsResult",
     "PBlockResult",
     "PBlockSimulator",
     "SimulationProfile",

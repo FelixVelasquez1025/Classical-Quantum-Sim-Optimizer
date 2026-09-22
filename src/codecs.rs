@@ -14,6 +14,10 @@ pub(crate) enum DistributedSimulationMode {
 pub(crate) struct MpsOptions {
     pub(crate) max_bond_dimension: Option<usize>,
     pub(crate) truncation_threshold: f64,
+    pub(crate) max_discarded_weight: f64,
+    pub(crate) max_memory_mb: usize,
+    pub(crate) max_parallel_shots: usize,
+    pub(crate) sample_terminal: bool,
 }
 
 pub(crate) struct StatevectorOptions {
@@ -71,11 +75,19 @@ pub(crate) fn parse_distributed_mode(mode: &str) -> PyResult<DistributedSimulati
 pub(crate) fn parse_mps_options(options: Option<&Bound<PyDict>>) -> PyResult<MpsOptions> {
     let mut max_bond_dimension = None;
     let mut truncation_threshold: f64 = 1e-12;
+    let mut max_discarded_weight = 0.0;
+    let mut max_memory_mb = 1024;
+    let mut max_parallel_shots = 1;
+    let mut sample_terminal = true;
 
     if let Some(options) = options {
         for (key, value) in options.iter() {
             let key: String = key.extract()?;
             match key.as_str() {
+                "max_discarded_weight" => max_discarded_weight = value.extract()?,
+                "max_memory_mb" => max_memory_mb = value.extract()?,
+                "max_parallel_shots" => max_parallel_shots = value.extract()?,
+                "sample_terminal" => sample_terminal = value.extract()?,
                 "max_bond_dimension" => {
                     max_bond_dimension = parse_max_bond_dimension(&value)?;
                 }
@@ -94,6 +106,10 @@ pub(crate) fn parse_mps_options(options: Option<&Bound<PyDict>>) -> PyResult<Mps
     Ok(MpsOptions {
         max_bond_dimension,
         truncation_threshold,
+        max_discarded_weight,
+        max_memory_mb,
+        max_parallel_shots,
+        sample_terminal,
     })
 }
 

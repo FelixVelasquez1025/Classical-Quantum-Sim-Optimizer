@@ -1,24 +1,27 @@
+use super::{
+    engine::{checked_bytes, Mps, Options, Stats},
+    execution::{compile, Op},
+    result::{error, MpsResult},
+};
+use crate::{
+    profiling::write_shots_profile,
+    types::{format_cbits, Circuit},
+};
+use pyo3::prelude::*;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use nalgebra::DMatrix;
-use num_complex::Complex64;
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use rand::{Rng, SeedableRng};
-use rand_chacha::ChaCha8Rng;
-use serde::Serialize;
-
-use crate::gates;
-use crate::monolithic::statevector::SimulationResult;
-use crate::profiling::write_shots_profile;
-use crate::types::{format_cbits, Circuit, Instruction};
-
-type C = Complex64;
-
-// ---------------------------------------------------------------------------
-// ShotsProfile (simulate_shots instrumentation, dumped to JSON on disk)
-// ---------------------------------------------------------------------------
+#[pyclass]
+pub struct MpsSimulator {
+    seed: Option<u64>,
+    options: Options,
+    max_parallel_shots: usize,
+    sample_terminal: bool,
+}
 
 #[derive(Serialize)]
 struct ShotsProfile {
@@ -26,554 +29,304 @@ struct ShotsProfile {
     shots_total_time: f64,
     total_time: f64,
     num_shots: usize,
-    shot_times: Vec<f64>,
-    /// Total count/time of SVDs performed across all shots (the dominant cost of
-    /// two-qubit gates in the MPS representation, driven by truncation behavior).
-    svd_calls: u64,
-    svd_time: f64,
+    execution_strategy: String,
+    parallel_shots: usize,
+    deterministic_prefix_ops: usize,
+    #[serde(flatten)]
+    stats: Stats,
+}
+fn merge_stats(a: &mut Stats, b: &Stats) {
+    a.svd_calls += b.svd_calls;
+    a.svd_time += b.svd_time;
+    a.routing_swaps += b.routing_swaps;
+    a.center_moves += b.center_moves;
+    a.peak_bond_dimension = a.peak_bond_dimension.max(b.peak_bond_dimension);
+    a.peak_tensor_bytes = a.peak_tensor_bytes.max(b.peak_tensor_bytes);
+    a.peak_working_bytes = a.peak_working_bytes.max(b.peak_working_bytes);
+    a.discarded_weight += b.discarded_weight;
+    a.truncations += b.truncations;
+    a.bond_cap_truncations += b.bond_cap_truncations;
 }
 
-#[derive(Clone)]
-struct Tensor {
-    left: usize,
-    right: usize,
-    data: Vec<C>,
+fn prepare(circuit: &Bound<PyAny>) -> PyResult<(Circuit, Vec<Op>)> {
+    let json: String = circuit.call_method0("model_dump_json")?.extract()?;
+    let circuit: Circuit = serde_json::from_str(&json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
+    })?;
+    crate::validation::validate_circuit(&circuit)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let ops = compile(&circuit.instructions).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    Ok((circuit, ops))
 }
-
-impl Tensor {
-    fn zero(left: usize, right: usize) -> Self {
-        Self {
-            left,
-            right,
-            data: vec![C::new(0.0, 0.0); left * 2 * right],
-        }
-    }
-
-    #[inline]
-    fn idx(&self, left: usize, state: usize, right: usize) -> usize {
-        (left * 2 + state) * self.right + right
-    }
-
-    #[inline]
-    fn get(&self, left: usize, state: usize, right: usize) -> C {
-        self.data[self.idx(left, state, right)]
-    }
-
-    #[inline]
-    fn set(&mut self, left: usize, state: usize, right: usize, value: C) {
-        let idx = self.idx(left, state, right);
-        self.data[idx] = value;
-    }
-}
-
-struct Mps {
-    tensors: Vec<Tensor>,
-    max_bond_dimension: Option<usize>,
-    truncation_threshold: f64,
-    svd_calls: u64,
-    svd_time: f64,
-}
-
-impl Mps {
-    fn new(
-        num_qubits: usize,
-        max_bond_dimension: Option<usize>,
-        truncation_threshold: f64,
-    ) -> Self {
-        let mut tensors = Vec::with_capacity(num_qubits);
-        for _ in 0..num_qubits {
-            let mut tensor = Tensor::zero(1, 1);
-            tensor.set(0, 0, 0, C::new(1.0, 0.0));
-            tensors.push(tensor);
-        }
-        Self {
-            tensors,
-            max_bond_dimension,
-            truncation_threshold,
-            svd_calls: 0,
-            svd_time: 0.0,
-        }
-    }
-
-    fn apply_1q(&mut self, qubit: usize, mat: &[[C; 2]; 2]) {
-        let old = self.tensors[qubit].clone();
-        let mut new = Tensor::zero(old.left, old.right);
-        for left in 0..old.left {
-            for right in 0..old.right {
-                for (out, row) in mat.iter().enumerate() {
-                    let mut acc = C::new(0.0, 0.0);
-                    for (input, gate_element) in row.iter().enumerate() {
-                        acc += *gate_element * old.get(left, input, right);
-                    }
-                    new.set(left, out, right, acc);
-                }
-            }
-        }
-        self.tensors[qubit] = new;
-    }
-
-    fn apply_2q(&mut self, a: usize, b: usize, mat: &[[C; 4]; 4]) -> PyResult<()> {
-        if a == b {
-            return Ok(());
-        }
-        let (lo, hi, reversed) = if a < b { (a, b, false) } else { (b, a, true) };
-
-        for pos in ((lo + 1)..hi).rev() {
-            self.apply_adjacent_2q(pos, &gates::swap())?;
-        }
-
-        let gate = if reversed {
-            reverse_2q_order(mat)
-        } else {
-            *mat
-        };
-        self.apply_adjacent_2q(lo, &gate)?;
-
-        for pos in (lo + 1)..hi {
-            self.apply_adjacent_2q(pos, &gates::swap())?;
-        }
-        Ok(())
-    }
-
-    fn apply_adjacent_2q(&mut self, q: usize, mat: &[[C; 4]; 4]) -> PyResult<()> {
-        let left_tensor = self.tensors[q].clone();
-        let right_tensor = self.tensors[q + 1].clone();
-        if left_tensor.right != right_tensor.left {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "Invalid MPS bond dimensions",
-            ));
-        }
-
-        let left_dim = left_tensor.left;
-        let bond_dim = left_tensor.right;
-        let right_dim = right_tensor.right;
-        let mut theta = DMatrix::<C>::zeros(left_dim * 2, 2 * right_dim);
-
-        for left in 0..left_dim {
-            for right in 0..right_dim {
-                for out0 in 0..2 {
-                    for out1 in 0..2 {
-                        let mut acc = C::new(0.0, 0.0);
-                        let out_idx = out0 * 2 + out1;
-                        for in0 in 0..2 {
-                            for in1 in 0..2 {
-                                let in_idx = in0 * 2 + in1;
-                                let mut input_amp = C::new(0.0, 0.0);
-                                for bond in 0..bond_dim {
-                                    input_amp += left_tensor.get(left, in0, bond)
-                                        * right_tensor.get(bond, in1, right);
-                                }
-                                acc += mat[out_idx][in_idx] * input_amp;
-                            }
-                        }
-                        theta[(left * 2 + out0, out1 * right_dim + right)] = acc;
-                    }
-                }
-            }
-        }
-
-        let svd_t0 = Instant::now();
-        let svd = theta.svd(true, true);
-        self.svd_time += svd_t0.elapsed().as_secs_f64();
-        self.svd_calls += 1;
-        let u = svd.u.ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return U")
-        })?;
-        let vt = svd.v_t.ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("MPS SVD did not return Vt")
-        })?;
-
-        let mut keep = svd
-            .singular_values
-            .iter()
-            .filter(|&&s| s > self.truncation_threshold)
-            .count()
-            .max(1);
-        if let Some(max_bond) = self.max_bond_dimension {
-            keep = keep.min(max_bond.max(1));
-        }
-        let kept_norm = svd
-            .singular_values
-            .iter()
-            .take(keep)
-            .map(|s| s * s)
-            .sum::<f64>()
-            .sqrt()
-            .max(1e-15);
-        let total_norm = svd
-            .singular_values
-            .iter()
-            .map(|s| s * s)
-            .sum::<f64>()
-            .sqrt();
-        let discarded_weight = svd
-            .singular_values
-            .iter()
-            .skip(keep)
-            .map(|s| s * s)
-            .sum::<f64>();
-        let truncation_scale = if discarded_weight > 0.0 {
-            total_norm / kept_norm
-        } else {
-            1.0
-        };
-
-        let mut new_left = Tensor::zero(left_dim, keep);
-        let mut new_right = Tensor::zero(keep, right_dim);
-        for left in 0..left_dim {
-            for state in 0..2 {
-                let row = left * 2 + state;
-                for bond in 0..keep {
-                    new_left.set(left, state, bond, u[(row, bond)]);
-                }
-            }
-        }
-        for bond in 0..keep {
-            let sigma = C::new(svd.singular_values[bond] * truncation_scale, 0.0);
-            for state in 0..2 {
-                for right in 0..right_dim {
-                    let col = state * right_dim + right;
-                    new_right.set(bond, state, right, sigma * vt[(bond, col)]);
-                }
-            }
-        }
-
-        self.tensors[q] = new_left;
-        self.tensors[q + 1] = new_right;
-        Ok(())
-    }
-
-    fn to_statevector(&self) -> Vec<C> {
-        let num_qubits = self.tensors.len();
-        let mut state = vec![C::new(0.0, 0.0); 1 << num_qubits];
-        for (basis, amp) in state.iter_mut().enumerate() {
-            let mut work = vec![C::new(1.0, 0.0)];
-            for (qubit, tensor) in self.tensors.iter().enumerate() {
-                let bit = (basis >> qubit) & 1;
-                let mut next = vec![C::new(0.0, 0.0); tensor.right];
-                for (left, left_amp) in work.iter().enumerate().take(tensor.left) {
-                    for (right, next_amp) in next.iter_mut().enumerate().take(tensor.right) {
-                        *next_amp += *left_amp * tensor.get(left, bit, right);
-                    }
-                }
-                work = next;
-            }
-            *amp = work[0];
-        }
-        state
-    }
-
-    fn measure(&mut self, qubit: usize, rng: &mut impl Rng) -> usize {
-        let state = self.to_statevector();
-        let p1: f64 = state
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| ((*idx >> qubit) & 1) == 1)
-            .map(|(_, amp)| amp.norm_sqr())
-            .sum();
-        let p1 = p1.clamp(0.0, 1.0);
-        let outcome = if rng.gen::<f64>() < p1 { 1 } else { 0 };
-        let prob = if outcome == 1 { p1 } else { 1.0 - p1 };
-        self.project_qubit(qubit, outcome, prob);
-        outcome
-    }
-
-    fn project_qubit(&mut self, qubit: usize, outcome: usize, prob: f64) {
-        let scale = if prob > 0.0 { 1.0 / prob.sqrt() } else { 0.0 };
-        let tensor = &mut self.tensors[qubit];
-        for left in 0..tensor.left {
-            for state in 0..2 {
-                for right in 0..tensor.right {
-                    let value = if state == outcome {
-                        tensor.get(left, state, right) * C::new(scale, 0.0)
-                    } else {
-                        C::new(0.0, 0.0)
-                    };
-                    tensor.set(left, state, right, value);
-                }
-            }
-        }
-    }
-}
-
-#[pyclass]
-pub struct MpsSimulator {
-    seed: Option<u64>,
-    max_bond_dimension: Option<usize>,
-    truncation_threshold: f64,
-}
-
 #[pymethods]
 impl MpsSimulator {
     #[new]
-    #[pyo3(signature = (seed=None, max_bond_dimension=None, truncation_threshold=1e-12))]
+    #[pyo3(signature=(seed=None,max_bond_dimension=None,truncation_threshold=1e-12,*,max_discarded_weight=0.0,max_memory_mb=1024,max_parallel_shots=1,sample_terminal=true,profile=false))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         seed: Option<u64>,
         max_bond_dimension: Option<usize>,
         truncation_threshold: f64,
-    ) -> Self {
-        Self {
+        max_discarded_weight: f64,
+        max_memory_mb: usize,
+        max_parallel_shots: usize,
+        sample_terminal: bool,
+        profile: bool,
+    ) -> PyResult<Self> {
+        if max_bond_dimension == Some(0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "max_bond_dimension must be positive or None",
+            ));
+        }
+        if !truncation_threshold.is_finite() || truncation_threshold < 0. {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "truncation_threshold must be finite and non-negative",
+            ));
+        }
+        if !max_discarded_weight.is_finite() || !(0.0..1.0).contains(&max_discarded_weight) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "max_discarded_weight must be finite and in [0,1)",
+            ));
+        }
+        let memory = max_memory_mb
+            .checked_mul(1024 * 1024)
+            .filter(|&x| x > 0 && x <= isize::MAX as usize)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "max_memory_mb must be positive and representable",
+                )
+            })?;
+        if max_parallel_shots == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "max_parallel_shots must be positive",
+            ));
+        }
+        Ok(Self {
             seed,
-            max_bond_dimension,
-            truncation_threshold,
-        }
+            options: Options {
+                max_bond: max_bond_dimension,
+                threshold: truncation_threshold,
+                discarded_budget: max_discarded_weight,
+                memory,
+                profile,
+            },
+            max_parallel_shots,
+            sample_terminal,
+        })
     }
-
-    pub fn simulate(&self, _py: Python, circuit: &Bound<PyAny>) -> PyResult<SimulationResult> {
-        let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
-        let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
-        })?;
-
-        let mut mps = Mps::new(
-            rust_circuit.num_qubits(),
-            self.max_bond_dimension,
-            self.truncation_threshold,
-        );
-        let mut cbits: HashMap<usize, i32> = HashMap::new();
-        let seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        for inst in &rust_circuit.instructions {
-            run_instruction(&mut mps, inst, &mut cbits, &mut rng)?;
-        }
-
-        Ok(SimulationResult::new(
-            mps.to_statevector(),
-            rust_circuit.num_qubits(),
+    pub fn simulate(&self, py: Python, circuit: &Bound<PyAny>) -> PyResult<MpsResult> {
+        let start = Instant::now();
+        let (circuit, ops) = prepare(circuit)?;
+        let mut rng =
+            ChaCha8Rng::seed_from_u64(self.seed.unwrap_or_else(|| rand::thread_rng().gen()));
+        let (state, cbits) = py
+            .allow_threads(|| -> Result<_, String> {
+                let mut state = Mps::new(circuit.num_qubits(), self.options.clone())?;
+                let mut cbits = HashMap::new();
+                for op in &ops {
+                    op.run(&mut state, &mut cbits, &mut rng)?;
+                }
+                state.move_center(0)?;
+                Ok((state, cbits))
+            })
+            .map_err(error)?;
+        Ok(MpsResult {
+            state,
             cbits,
-            None,
-        ))
+            total_time: start.elapsed().as_secs_f64(),
+        })
     }
-
-    #[pyo3(signature = (circuit, shots=1000, profile=false))]
+    #[pyo3(signature=(circuit,shots=1000,profile=false))]
     pub fn simulate_shots(
         &self,
         py: Python,
         circuit: &Bound<PyAny>,
         shots: usize,
         profile: bool,
-    ) -> PyResult<PyObject> {
-        let total_t0 = Instant::now();
-
-        let preprocessing_t0 = Instant::now();
-        let json_str: String = circuit.call_method0("model_dump_json")?.extract()?;
-        let rust_circuit: Circuit = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Circuit JSON parse error: {e}"))
-        })?;
-
-        let num_cbits = rust_circuit.num_cbits();
+    ) -> PyResult<HashMap<String, usize>> {
+        let start = Instant::now();
+        let (circuit, ops) = prepare(circuit)?;
+        let preprocessing_time = start.elapsed().as_secs_f64();
+        let n = circuit.num_qubits();
+        let nc = circuit.num_cbits();
+        let classical_bytes = checked_bytes(nc, 32).map_err(error)?;
+        if classical_bytes >= self.options.memory {
+            return Err(error(
+                "Classical shot workspace exceeds max_memory_mb".into(),
+            ));
+        }
         let base_seed = self.seed.unwrap_or_else(|| rand::thread_rng().gen());
-        let preprocessing_time = preprocessing_t0.elapsed().as_secs_f64();
-
-        let shots_t0 = Instant::now();
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        let mut shot_times: Vec<f64> = Vec::with_capacity(if profile { shots } else { 0 });
-        let mut svd_calls: u64 = 0;
-        let mut svd_time: f64 = 0.0;
-        for shot in 0..shots {
-            let shot_t0 = Instant::now();
-            let mut mps = Mps::new(
-                rust_circuit.num_qubits(),
-                self.max_bond_dimension,
-                self.truncation_threshold,
-            );
-            let mut cbits: HashMap<usize, i32> = HashMap::new();
-            let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
-            for inst in &rust_circuit.instructions {
-                run_instruction(&mut mps, inst, &mut cbits, &mut rng)?;
-            }
-            let key = format_cbits(&cbits, num_cbits);
-            *counts.entry(key).or_insert(0) += 1;
-            if profile {
-                shot_times.push(shot_t0.elapsed().as_secs_f64());
-                svd_calls += mps.svd_calls;
-                svd_time += mps.svd_time;
-            }
-        }
-        let shots_total_time = shots_t0.elapsed().as_secs_f64();
-
-        let d = PyDict::new_bound(py);
-        for (key, value) in &counts {
-            d.set_item(key, value)?;
-        }
-
+        let mut options = self.options.clone();
+        options.profile = profile;
+        options.memory -= classical_bytes;
+        let prefix_len = ops.iter().take_while(|op| op.unitary()).count();
+        let terminal = self.sample_terminal && ops[prefix_len..].iter().all(Op::terminal);
+        let exec_start = Instant::now();
+        let (counts, stats, strategy, workers, used_prefix) = py
+            .allow_threads(|| {
+                self.run_shots(
+                    n,
+                    nc,
+                    &ops,
+                    shots,
+                    base_seed,
+                    options,
+                    classical_bytes,
+                    prefix_len,
+                    terminal,
+                )
+            })
+            .map_err(error)?;
         if profile {
-            let total_time = total_t0.elapsed().as_secs_f64();
-            let shots_profile = ShotsProfile {
+            let report = ShotsProfile {
                 preprocessing_time,
-                shots_total_time,
-                total_time,
+                shots_total_time: exec_start.elapsed().as_secs_f64(),
+                total_time: start.elapsed().as_secs_f64(),
                 num_shots: shots,
-                shot_times,
-                svd_calls,
-                svd_time,
+                execution_strategy: strategy.into(),
+                parallel_shots: workers,
+                deterministic_prefix_ops: used_prefix,
+                stats,
             };
-            write_shots_profile("mps", &shots_profile).map_err(|e| {
+            write_shots_profile("mps", &report).map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to write shots profile: {e}"
+                    "Failed to write MPS profile: {e}"
                 ))
             })?;
         }
-
-        Ok(d.into())
+        Ok(counts)
     }
 }
 
-fn run_instruction(
-    mps: &mut Mps,
-    inst: &Instruction,
-    cbits: &mut HashMap<usize, i32>,
-    rng: &mut impl Rng,
-) -> PyResult<()> {
-    match inst {
-        Instruction::Id { .. }
-        | Instruction::U0 { .. }
-        | Instruction::Barrier
-        | Instruction::Classical { .. } => {}
-        Instruction::X { qubit } => mps.apply_1q(*qubit, &gates::X),
-        Instruction::Y { qubit } => mps.apply_1q(*qubit, &gates::Y),
-        Instruction::Z { qubit } => mps.apply_1q(*qubit, &gates::Z),
-        Instruction::H { qubit } => mps.apply_1q(*qubit, &gates::h()),
-        Instruction::S { qubit } => mps.apply_1q(*qubit, &gates::s_gate()),
-        Instruction::Sdg { qubit } => mps.apply_1q(*qubit, &gates::sdg()),
-        Instruction::T { qubit } => mps.apply_1q(*qubit, &gates::t_gate()),
-        Instruction::Tdg { qubit } => mps.apply_1q(*qubit, &gates::tdg()),
-        Instruction::Sx { qubit } => mps.apply_1q(*qubit, &gates::sx()),
-        Instruction::Sxdg { qubit } => mps.apply_1q(*qubit, &gates::sxdg()),
-        Instruction::U3 {
-            qubit,
-            theta,
-            phi,
-            lam,
+type ShotOutput = (HashMap<String, usize>, Stats, &'static str, usize, usize);
+impl MpsSimulator {
+    #[allow(clippy::too_many_arguments)]
+    fn run_shots(
+        &self,
+        n: usize,
+        nc: usize,
+        ops: &[Op],
+        shots: usize,
+        base_seed: u64,
+        options: Options,
+        classical_bytes: usize,
+        prefix_len: usize,
+        terminal: bool,
+    ) -> Result<ShotOutput, String> {
+        let mut counts = HashMap::new();
+        let mut stats = Stats::default();
+        if shots == 0 {
+            return Ok((counts, stats, "empty", 0, 0));
         }
-        | Instruction::U {
-            qubit,
-            theta,
-            phi,
-            lam,
-        } => mps.apply_1q(*qubit, &gates::u3(*theta, *phi, *lam)),
-        Instruction::U2 { qubit, phi, lam } => mps.apply_1q(*qubit, &gates::u2(*phi, *lam)),
-        Instruction::U1 { qubit, lam } | Instruction::P { qubit, lam } => {
-            mps.apply_1q(*qubit, &gates::u1(*lam));
+        let mut prefix = Mps::new(n, options.clone())?;
+        let mut rng = ChaCha8Rng::seed_from_u64(base_seed);
+        for op in &ops[..prefix_len] {
+            op.run(&mut prefix, &mut HashMap::new(), &mut rng)?;
         }
-        Instruction::Rx { qubit, theta } => mps.apply_1q(*qubit, &gates::rx(*theta)),
-        Instruction::Ry { qubit, theta } => mps.apply_1q(*qubit, &gates::ry(*theta)),
-        Instruction::Rz { qubit, phi } => mps.apply_1q(*qubit, &gates::rz(*phi)),
-        Instruction::Cx { control, target } => mps.apply_2q(*control, *target, &gates::cnot())?,
-        Instruction::Cz { control, target } => mps.apply_2q(*control, *target, &gates::cz())?,
-        Instruction::Cy { control, target } => mps.apply_2q(*control, *target, &gates::cy())?,
-        Instruction::Ch { control, target } => mps.apply_2q(*control, *target, &gates::ch())?,
-        Instruction::Swap { a, b } => mps.apply_2q(*a, *b, &gates::swap())?,
-        Instruction::Csx { control, target } => mps.apply_2q(*control, *target, &gates::csx())?,
-        Instruction::Crx {
-            control,
-            target,
-            theta,
-        } => mps.apply_2q(*control, *target, &gates::crx(*theta))?,
-        Instruction::Cry {
-            control,
-            target,
-            theta,
-        } => mps.apply_2q(*control, *target, &gates::cry(*theta))?,
-        Instruction::Crz {
-            control,
-            target,
-            lam,
-        } => mps.apply_2q(*control, *target, &gates::crz(*lam))?,
-        Instruction::Cu1 {
-            control,
-            target,
-            lam,
-        }
-        | Instruction::Cp {
-            control,
-            target,
-            lam,
-        } => mps.apply_2q(*control, *target, &gates::cu1(*lam))?,
-        Instruction::Cu3 {
-            control,
-            target,
-            theta,
-            phi,
-            lam,
-        } => mps.apply_2q(*control, *target, &gates::cu3(*theta, *phi, *lam))?,
-        Instruction::Cu {
-            control,
-            target,
-            theta,
-            phi,
-            lam,
-            gamma,
-        } => mps.apply_2q(*control, *target, &gates::cu(*theta, *phi, *lam, *gamma))?,
-        Instruction::Rxx { a, b, theta } => mps.apply_2q(*a, *b, &gates::rxx(*theta))?,
-        Instruction::Rzz { a, b, theta } => mps.apply_2q(*a, *b, &gates::rzz(*theta))?,
-        Instruction::Gate { name, qubits, .. } => match name.to_lowercase().as_str() {
-            "remote_link_phi_plus" | "remote_epr" | "epr" => {
-                mps.apply_2q(qubits[0], qubits[1], &gates::phi_plus())?;
+        if terminal {
+            prefix.move_center(0)?;
+            if !ops[prefix_len..]
+                .iter()
+                .any(|op| matches!(op, Op::Measure(..)))
+            {
+                counts.insert("0".repeat(nc), shots);
+                return Ok((counts, prefix.stats, "terminal_sampling", 1, prefix_len));
             }
-            "remote_link_psi_minus" => {
-                mps.apply_2q(qubits[0], qubits[1], &gates::psi_minus())?;
-            }
-            "remote_link_psi_plus" => {
-                mps.apply_2q(qubits[0], qubits[1], &gates::psi_plus())?;
-            }
-            "nonlocal_cz" | "remote_cz" => {
-                mps.apply_2q(qubits[0], qubits[1], &gates::cz())?;
-            }
-            "remote_cx" => {
-                mps.apply_2q(qubits[0], qubits[1], &gates::cnot())?;
-            }
-            "remote_barrier" | "remote_cu1" => {}
-            other if other.starts_with("circuit-") => {}
-            other => {
-                return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-                    "MPS simulator does not support generic gate {other:?}"
-                )));
-            }
-        },
-        Instruction::Measure { qubit, cbit } => {
-            let outcome = mps.measure(*qubit, rng);
-            cbits.insert(*cbit, outcome as i32);
-        }
-        Instruction::Reset { qubit } => {
-            let outcome = mps.measure(*qubit, rng);
-            if outcome == 1 {
-                mps.apply_1q(*qubit, &gates::X);
-            }
-        }
-        Instruction::Conditional { condition, op } => {
-            let mut actual: u64 = 0;
-            for bit in 0..condition.creg_size {
-                let val = *cbits.get(&(condition.creg_base + bit)).unwrap_or(&0) as u64;
-                actual |= val << bit;
-            }
-            if actual == condition.creg_value {
-                run_instruction(mps, op, cbits, rng)?;
-            }
-        }
-        _ => {
-            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                "MPS simulator only supports one- and two-qubit unitary gates plus measurement, reset, and conditionals",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn reverse_2q_order(mat: &[[C; 4]; 4]) -> [[C; 4]; 4] {
-    let mut out = [[C::new(0.0, 0.0); 4]; 4];
-    for a_out in 0..2 {
-        for b_out in 0..2 {
-            for a_in in 0..2 {
-                for b_in in 0..2 {
-                    let row = a_out * 2 + b_out;
-                    let col = a_in * 2 + b_in;
-                    let swapped_row = b_out * 2 + a_out;
-                    let swapped_col = b_in * 2 + a_in;
-                    out[row][col] = mat[swapped_row][swapped_col];
+            for shot in 0..shots {
+                let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
+                let bits = prefix.sample(&mut rng)?;
+                let mut cbits = HashMap::new();
+                for op in &ops[prefix_len..] {
+                    if let Op::Measure(q, c) = op {
+                        cbits.insert(*c, bits[*q] as i32);
+                    }
                 }
+                *counts.entry(format_cbits(&cbits, nc)).or_insert(0) += 1;
             }
+            return Ok((counts, prefix.stats, "terminal_sampling", 1, prefix_len));
         }
+        // Keep a prefix only when a trajectory plus workspace can coexist.
+        let retain = prefix_len > 0
+            && prefix.bytes().saturating_mul(3) < options.memory
+            && prefix
+                .bytes()
+                .saturating_add(prefix.stats.peak_working_bytes)
+                <= options.memory;
+        let reserved = if retain { prefix.bytes() } else { 0 };
+        let initial = checked_bytes(n, 128)?
+            .saturating_add(classical_bytes)
+            .max(
+                prefix
+                    .stats
+                    .peak_working_bytes
+                    .saturating_add(classical_bytes),
+            )
+            .max(4096);
+        if retain {
+            merge_stats(&mut stats, &prefix.stats);
+            prefix.stats = Stats::default();
+        }
+        let workers = self
+            .max_parallel_shots
+            .min(shots)
+            .min(rayon::current_num_threads())
+            .min(((options.memory - reserved) / initial).max(1));
+        let mut worker_options = options.clone();
+        worker_options.memory =
+            (options.memory - reserved - (workers - 1) * classical_bytes) / workers;
+        let prefix = if retain { Some(prefix) } else { None };
+        let run_worker = |worker: usize| -> Result<_, String> {
+            let mut local = HashMap::new();
+            let mut stats = Stats::default();
+            let mut state = if let Some(p) = &prefix {
+                if p.bytes() > worker_options.memory {
+                    return Err("MPS trajectory exceeds per-worker memory budget; reduce max_parallel_shots".into());
+                }
+                let mut copy = p.clone();
+                copy.options = worker_options.clone();
+                copy
+            } else {
+                Mps::new(n, worker_options.clone())?
+            };
+            for (iteration, shot) in (worker..shots).step_by(workers).enumerate() {
+                if iteration > 0 {
+                    if let Some(p) = &prefix {
+                        state.restore(p);
+                    } else {
+                        state.reset_zero();
+                    }
+                }
+                let mut cbits = HashMap::new();
+                let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(shot as u64));
+                let start = if retain { prefix_len } else { 0 };
+                for op in &ops[start..] {
+                    op.run(&mut state, &mut cbits, &mut rng)?;
+                }
+                *local.entry(format_cbits(&cbits, nc)).or_insert(0) += 1;
+                merge_stats(&mut stats, &state.stats);
+            }
+            Ok((local, stats))
+        };
+        let batches = (0..workers)
+            .into_par_iter()
+            .map(run_worker)
+            .collect::<Result<Vec<_>, String>>()?;
+        for (local, s) in batches {
+            for (k, v) in local {
+                *counts.entry(k).or_insert(0) += v;
+            }
+            merge_stats(&mut stats, &s);
+        }
+        Ok((
+            counts,
+            stats,
+            if retain {
+                "prefix_trajectories"
+            } else {
+                "trajectories"
+            },
+            workers,
+            if retain { prefix_len } else { 0 },
+        ))
     }
-    out
 }

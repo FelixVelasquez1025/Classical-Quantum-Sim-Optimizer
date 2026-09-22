@@ -32,7 +32,12 @@ pub fn simulate_monolithic(
                 seed,
                 options.max_bond_dimension,
                 options.truncation_threshold,
-            );
+                options.max_discarded_weight,
+                options.max_memory_mb,
+                options.max_parallel_shots,
+                options.sample_terminal,
+                profile,
+            )?;
             Ok(sim.simulate(py, circuit)?.into_py(py))
         }
         MonolithicSimulationMode::Stabilizer => {
@@ -89,8 +94,13 @@ pub fn simulate_monolithic_shots(
                 seed,
                 options.max_bond_dimension,
                 options.truncation_threshold,
-            );
-            sim.simulate_shots(py, circuit, shots, profile)
+                options.max_discarded_weight,
+                options.max_memory_mb,
+                options.max_parallel_shots,
+                options.sample_terminal,
+                profile,
+            )?;
+            Ok(sim.simulate_shots(py, circuit, shots, profile)?.into_py(py))
         }
         MonolithicSimulationMode::Stabilizer => {
             reject_monolithic_options(options, mode)?;

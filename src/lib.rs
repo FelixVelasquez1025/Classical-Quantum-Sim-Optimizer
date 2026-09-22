@@ -8,6 +8,7 @@ mod monolithic;
 mod profiling;
 mod simulator;
 mod types;
+mod validation;
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -16,6 +17,7 @@ use pyo3::wrap_pyfunction;
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<monolithic::statevector::StatevectorSimulator>()?;
     m.add_class::<monolithic::mps::MpsSimulator>()?;
+    m.add_class::<monolithic::mps::MpsResult>()?;
     m.add_class::<monolithic::statevector::SimulationResult>()?;
     m.add_class::<monolithic::statevector::SimulationProfile>()?;
     m.add_class::<monolithic::stabilizer::StabilizerSimulator>()?;
