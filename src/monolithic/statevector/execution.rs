@@ -18,7 +18,7 @@ pub(super) struct ProfileAcc {
     pub mq_time: f64,
 }
 
-pub(super) enum Operation {
+pub(crate) enum Operation {
     One {
         target: usize,
         matrix: gates::Mat2,
@@ -105,7 +105,7 @@ impl Operation {
         }
     }
 
-    fn compile(inst: &Instruction) -> Result<Self, String> {
+    pub(crate) fn compile(inst: &Instruction) -> Result<Self, String> {
         use Instruction::*;
         if let Some((q, matrix)) = gate_matrix_1q(inst) {
             return Ok(Self::one(q, matrix, vec![]));
@@ -253,7 +253,7 @@ impl Operation {
                 qubits,
                 params,
             } => match name.to_lowercase().as_str() {
-                "remote_link_phi_plus" | "remote_epr" => {
+                "remote_link_phi_plus" | "remote_epr" | "epr" => {
                     Self::dense(qubits.clone(), gates::phi_plus())
                 }
                 "remote_link_psi_plus" => Self::dense(qubits.clone(), gates::psi_plus()),
@@ -273,7 +273,7 @@ impl Operation {
         })
     }
 
-    pub fn execute(
+    pub(super) fn execute(
         &self,
         state: &mut [C],
         n: usize,

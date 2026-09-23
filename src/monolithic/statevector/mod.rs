@@ -1,4 +1,4 @@
-mod execution;
+pub(crate) mod execution;
 mod shots;
 mod simulator;
 mod validation;

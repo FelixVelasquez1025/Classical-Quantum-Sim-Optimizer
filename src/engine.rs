@@ -259,6 +259,10 @@ pub(crate) struct DenseLayout {
 }
 
 impl DenseLayout {
+    pub(crate) fn qubits(&self) -> &[usize] {
+        &self.qubits[..self.arity]
+    }
+
     pub(crate) fn new(qubits: &[usize]) -> Self {
         let k = qubits.len();
         assert!(
@@ -343,16 +347,19 @@ impl DenseLayout {
     }
 }
 
+#[cfg(test)]
 fn apply_n_qubit_impl(state: &mut [C], u: &[Vec<C>], qubits: &[usize], n: usize, parallel: bool) {
     DenseLayout::new(qubits).apply(state, u, n, parallel);
 }
 
 /// Apply a dense gate with qubits[0] as the MSB of its matrix index.
+#[cfg(test)]
 pub fn apply_n_qubit(state: &mut [C], u: &[Vec<C>], qubits: &[usize], n: usize) {
     apply_n_qubit_impl(state, u, qubits, n, true);
 }
 
 /// Single-threaded dense application without per-gate scratch allocations.
+#[cfg(test)]
 pub fn apply_n_qubit_seq(state: &mut [C], u: &[Vec<C>], qubits: &[usize], n: usize) {
     apply_n_qubit_impl(state, u, qubits, n, false);
 }

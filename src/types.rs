@@ -50,14 +50,14 @@ pub fn format_cbits(cbits: &HashMap<usize, i32>, num_cbits: usize) -> String {
         .collect()
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Condition {
     pub creg_base: usize,
     pub creg_size: usize,
     pub creg_value: u64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
     // -----------------------------------------------------------------------
@@ -299,20 +299,6 @@ pub enum Instruction {
 // Gate fusion
 // ---------------------------------------------------------------------------
 
-#[inline]
-fn matmul2x2(a: [[C; 2]; 2], b: [[C; 2]; 2]) -> [[C; 2]; 2] {
-    [
-        [
-            a[0][0] * b[0][0] + a[0][1] * b[1][0],
-            a[0][0] * b[0][1] + a[0][1] * b[1][1],
-        ],
-        [
-            a[1][0] * b[0][0] + a[1][1] * b[1][0],
-            a[1][0] * b[0][1] + a[1][1] * b[1][1],
-        ],
-    ]
-}
-
 /// Shared single-qubit gate definitions used by both circuit compilers.
 pub(crate) fn gate_matrix_1q(inst: &Instruction) -> Option<(usize, [[C; 2]; 2])> {
     use crate::gates;
@@ -355,69 +341,6 @@ pub(crate) fn gate_matrix_1q(inst: &Instruction) -> Option<(usize, [[C; 2]; 2])>
         _ => return None,
     };
     Some((q, matrix))
-}
-
-fn is_identity_2x2(m: &[[C; 2]; 2]) -> bool {
-    (m[0][0] - C::new(1.0, 0.0)).norm() < 1e-10
-        && m[0][1].norm() < 1e-10
-        && m[1][0].norm() < 1e-10
-        && (m[1][1] - C::new(1.0, 0.0)).norm() < 1e-10
-}
-
-/// Owned fused entry for the pblock simulator shot loop.
-/// Unlike FusedInstruction<'a>, this is 'static and Send.
-pub enum FusedPBlockEntry {
-    /// Reference back into node_circuits by (node, local_idx).
-    Original { node: usize, local_idx: usize },
-    /// Pre-computed single-qubit matrix (no circuit reference needed).
-    Fused1Q { qubit: usize, matrix: [[C; 2]; 2] },
-}
-
-/// Fuse consecutive single-qubit gates in the globally-sorted pblock entry stream.
-/// `entries` is `&[(order, node, local_idx)]` already sorted by order.
-pub fn fuse_pblock_entries(
-    entries: &[(i64, usize, usize)],
-    node_circuits: &HashMap<usize, Circuit>,
-) -> Vec<FusedPBlockEntry> {
-    let mut pending: HashMap<usize, [[C; 2]; 2]> = HashMap::new();
-    let mut out: Vec<FusedPBlockEntry> = Vec::with_capacity(entries.len());
-
-    let identity: [[C; 2]; 2] = [
-        [C::new(1.0, 0.0), C::new(0.0, 0.0)],
-        [C::new(0.0, 0.0), C::new(1.0, 0.0)],
-    ];
-
-    let flush_qubit =
-        |q: usize, pending: &mut HashMap<usize, [[C; 2]; 2]>, out: &mut Vec<FusedPBlockEntry>| {
-            if let Some(m) = pending.remove(&q) {
-                if !is_identity_2x2(&m) {
-                    out.push(FusedPBlockEntry::Fused1Q {
-                        qubit: q,
-                        matrix: m,
-                    });
-                }
-            }
-        };
-
-    for &(_, node, local_idx) in entries {
-        let inst = &node_circuits[&node].instructions[local_idx];
-        if let Some((qubit, mat)) = gate_matrix_1q(inst) {
-            let acc = pending.entry(qubit).or_insert(identity);
-            *acc = matmul2x2(mat, *acc);
-        } else {
-            let touched = inst.qubits();
-            for q in &touched {
-                flush_qubit(*q, &mut pending, &mut out);
-            }
-            out.push(FusedPBlockEntry::Original { node, local_idx });
-        }
-    }
-
-    let remaining: Vec<usize> = pending.keys().copied().collect();
-    for q in remaining {
-        flush_qubit(q, &mut pending, &mut out);
-    }
-    out
 }
 
 impl Instruction {
@@ -536,6 +459,235 @@ impl Instruction {
             Instruction::Conditional { op, .. } => op.qubits(),
 
             Instruction::Barrier | Instruction::Classical { .. } => vec![],
+        }
+    }
+}
+
+impl Instruction {
+    /// Remap quantum wires without changing classical addresses.
+    pub(crate) fn remap_qubits(&mut self, map: &impl Fn(usize) -> usize) {
+        match self {
+            Self::Id { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::X { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Y { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Z { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::H { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::S { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Sdg { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::T { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Tdg { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Sx { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Sxdg { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::U3 { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::U2 { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::U1 { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::U { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::P { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::Rx { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::Ry { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::Rz { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::U0 { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Cx { control, target } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cz { control, target } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cy { control, target } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Ch { control, target } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Swap { a, b } => {
+                *a = map(*a);
+                *b = map(*b);
+            }
+            Self::Csx { control, target } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Crx {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cry {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Crz {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cu1 {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cp {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cu3 {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Cu {
+                control, target, ..
+            } => {
+                *control = map(*control);
+                *target = map(*target);
+            }
+            Self::Rxx { a, b, .. } => {
+                *a = map(*a);
+                *b = map(*b);
+            }
+            Self::Rzz { a, b, .. } => {
+                *a = map(*a);
+                *b = map(*b);
+            }
+            Self::Ccx {
+                control1,
+                control2,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *target = map(*target);
+            }
+            Self::Cswap {
+                control,
+                target1,
+                target2,
+            } => {
+                *control = map(*control);
+                *target1 = map(*target1);
+                *target2 = map(*target2);
+            }
+            Self::Rccx {
+                control1,
+                control2,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *target = map(*target);
+            }
+            Self::Rc3x {
+                control1,
+                control2,
+                control3,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *control3 = map(*control3);
+                *target = map(*target);
+            }
+            Self::C3x {
+                control1,
+                control2,
+                control3,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *control3 = map(*control3);
+                *target = map(*target);
+            }
+            Self::C3sqrtx {
+                control1,
+                control2,
+                control3,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *control3 = map(*control3);
+                *target = map(*target);
+            }
+            Self::C4x {
+                control1,
+                control2,
+                control3,
+                control4,
+                target,
+            } => {
+                *control1 = map(*control1);
+                *control2 = map(*control2);
+                *control3 = map(*control3);
+                *control4 = map(*control4);
+                *target = map(*target);
+            }
+            Self::Gate { qubits, .. } => {
+                for q in qubits {
+                    *q = map(*q);
+                }
+            }
+            Self::Measure { qubit, .. } => {
+                *qubit = map(*qubit);
+            }
+            Self::Reset { qubit } => {
+                *qubit = map(*qubit);
+            }
+            Self::Conditional { op, .. } => op.remap_qubits(map),
+            Self::Classical { .. } => {}
+            Self::Barrier => {}
         }
     }
 }

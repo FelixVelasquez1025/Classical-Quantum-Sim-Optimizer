@@ -12,7 +12,10 @@ pub(crate) fn validate_circuit(circuit: &Circuit) -> Result<(), String> {
     Ok(())
 }
 
-fn register_ranges(registers: &HashMap<String, Register>, kind: &str) -> Result<Ranges, String> {
+pub(crate) fn register_ranges(
+    registers: &HashMap<String, Register>,
+    kind: &str,
+) -> Result<Ranges, String> {
     let mut ranges = Vec::with_capacity(registers.len());
     for (name, register) in registers {
         let end = register

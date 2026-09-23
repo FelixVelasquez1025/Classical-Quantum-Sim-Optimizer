@@ -1,0 +1,87 @@
+{
+  "description": "Release builds on the same machine, fixed seed 71, four Rayon threads, defaults for each implementation, warm-up then five repetitions. Before replays each shot; after uses terminal affine sampling. Focused GHZ benchmarks, not selector training labels.",
+  "before_stabilizer_source_commit": "1d3ec6003ccfac96403c4d8eaebc8a402d01b775",
+  "before_extension_sha256": "49c6905119194e8841eb5fbbd5b9b8d4f4d258f1010972d621c784afb223d16a",
+  "after_extension_sha256": "ab0680bf2b7ee2eb20dfc27bf585fe2c6f27aad623115925d354efa135edaeba",
+  "before": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.10.9",
+    "rayon_threads": "4",
+    "repeats": 5,
+    "seconds": {
+      "ghz_100q_1000shots": {
+        "median": 0.14818291600386146,
+        "samples": [
+          0.14806216600118205,
+          0.14730670899734832,
+          0.14818291600386146,
+          0.15745183400576934,
+          0.29086858400842175
+        ]
+      },
+      "ghz_500q_100shots": {
+        "median": 1.5721093340107473,
+        "samples": [
+          1.580984833999537,
+          1.5717322920099832,
+          1.5709149589965818,
+          1.5721093340107473,
+          1.5730707079928834
+        ]
+      },
+      "ghz_100q_1shot": {
+        "median": 0.0007328750070882961,
+        "samples": [
+          0.0007317499985219911,
+          0.0007366249919869006,
+          0.000739666007575579,
+          0.0007328750070882961,
+          0.0007274579984368756
+        ]
+      }
+    }
+  },
+  "after": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.10.9",
+    "rayon_threads": "4",
+    "repeats": 5,
+    "seconds": {
+      "ghz_100q_1000shots": {
+        "median": 0.0006244999967748299,
+        "samples": [
+          0.0006332909979391843,
+          0.0006244999967748299,
+          0.0006217080081114545,
+          0.0006215000030351803,
+          0.0006442500016419217
+        ]
+      },
+      "ghz_500q_100shots": {
+        "median": 0.008628707990283147,
+        "samples": [
+          0.008669582995935343,
+          0.008627167000668123,
+          0.008643790992209688,
+          0.008628707990283147,
+          0.008610874996520579
+        ]
+      },
+      "ghz_100q_1shot": {
+        "median": 0.000303166001685895,
+        "samples": [
+          0.0003047500067623332,
+          0.00030587500077672303,
+          0.0003003330057254061,
+          0.0003000839933520183,
+          0.000303166001685895
+        ]
+      }
+    }
+  },
+  "median_speedup": {
+    "ghz_100q_1000shots": 237.28249282488048,
+    "ghz_500q_100shots": 182.1952180768096,
+    "ghz_100q_1shot": 2.4174049959850548
+  }
+}

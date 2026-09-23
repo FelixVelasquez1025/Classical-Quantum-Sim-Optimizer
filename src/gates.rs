@@ -6,7 +6,6 @@ pub type Mat2 = [[C; 2]; 2];
 pub type Mat4 = [[C; 4]; 4];
 pub type Mat8 = [[C; 8]; 8];
 pub type Mat16 = [[C; 16]; 16];
-pub type Mat32 = [[C; 32]; 32];
 
 #[inline]
 pub const fn c(re: f64, im: f64) -> C {
@@ -78,9 +77,6 @@ pub fn u2(phi: f64, lam: f64) -> Mat2 {
 }
 pub fn u1(lam: f64) -> Mat2 {
     [[r(1.0), r(0.0)], [r(0.0), c(lam.cos(), lam.sin())]]
-}
-pub fn u(theta: f64, phi: f64, lam: f64) -> Mat2 {
-    u3(theta, phi, lam)
 }
 pub fn p(lam: f64) -> Mat2 {
     u1(lam)
@@ -177,9 +173,6 @@ pub fn crz(lam: f64) -> Mat4 {
 pub fn cu1(lam: f64) -> Mat4 {
     controlled(u1(lam))
 }
-pub fn cp(lam: f64) -> Mat4 {
-    controlled(p(lam))
-}
 pub fn cu3(theta: f64, phi: f64, lam: f64) -> Mat4 {
     controlled(u3(theta, phi, lam))
 }
@@ -214,22 +207,6 @@ pub fn rzz(theta: f64) -> Mat4 {
 // Fixed three-qubit gates (8×8)
 // ---------------------------------------------------------------------------
 
-pub fn ccx() -> Mat8 {
-    let mut m = identity8();
-    m[6][6] = r(0.0);
-    m[7][7] = r(0.0);
-    m[6][7] = r(1.0);
-    m[7][6] = r(1.0);
-    m
-}
-pub fn cswap() -> Mat8 {
-    let mut m = identity8();
-    m[5][5] = r(0.0);
-    m[6][6] = r(0.0);
-    m[5][6] = r(1.0);
-    m[6][5] = r(1.0);
-    m
-}
 pub fn rccx() -> Mat8 {
     let mut m = identity8();
     // Qiskit's RCCX, in our [control1, control2, target] MSB-first order.
@@ -256,37 +233,6 @@ pub fn rc3x() -> Mat16 {
     m[15][14] = r(-1.0);
     m
 }
-pub fn c3x() -> Mat16 {
-    let mut m = identity16();
-    m[14][14] = r(0.0);
-    m[15][15] = r(0.0);
-    m[14][15] = r(1.0);
-    m[15][14] = r(1.0);
-    m
-}
-pub fn c3sqrtx() -> Mat16 {
-    let mut m = identity16();
-    let sx = sx();
-    m[14][14] = sx[0][0];
-    m[14][15] = sx[0][1];
-    m[15][14] = sx[1][0];
-    m[15][15] = sx[1][1];
-    m
-}
-
-// ---------------------------------------------------------------------------
-// Fixed five-qubit gates (32×32)
-// ---------------------------------------------------------------------------
-
-pub fn c4x() -> Mat32 {
-    let mut m = identity32();
-    m[30][30] = r(0.0);
-    m[31][31] = r(0.0);
-    m[30][31] = r(1.0);
-    m[31][30] = r(1.0);
-    m
-}
-
 // ---------------------------------------------------------------------------
 // Cross-node gates (hardcoded from RemoteLinkGatePsiMinus/Plus._REMOTE_MATRIX)
 // ---------------------------------------------------------------------------
@@ -353,14 +299,6 @@ fn identity16() -> Mat16 {
     }
     m
 }
-fn identity32() -> Mat32 {
-    let mut m = [[r(0.0); 32]; 32];
-    for (i, row) in m.iter_mut().enumerate() {
-        row[i] = r(1.0);
-    }
-    m
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
