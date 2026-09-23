@@ -14,6 +14,42 @@ pub(crate) enum DistributedSimulationMode {
 pub(crate) struct MpsOptions {
     pub(crate) max_bond_dimension: Option<usize>,
     pub(crate) truncation_threshold: f64,
+    pub(crate) max_discarded_weight: f64,
+    pub(crate) max_memory_mb: usize,
+    pub(crate) max_parallel_shots: usize,
+    pub(crate) sample_terminal: bool,
+}
+
+pub(crate) struct StatevectorOptions {
+    pub(crate) max_memory_mb: usize,
+    pub(crate) max_parallel_shots: Option<usize>,
+    pub(crate) sample_terminal: bool,
+}
+
+pub(crate) fn parse_statevector_options(
+    options: Option<&Bound<PyDict>>,
+) -> PyResult<StatevectorOptions> {
+    let mut result = StatevectorOptions {
+        max_memory_mb: 1024,
+        max_parallel_shots: None,
+        sample_terminal: true,
+    };
+    if let Some(options) = options {
+        for (key, value) in options.iter() {
+            let key: String = key.extract()?;
+            match key.as_str() {
+                "max_memory_mb" => result.max_memory_mb = value.extract()?,
+                "max_parallel_shots" => result.max_parallel_shots = value.extract()?,
+                "sample_terminal" => result.sample_terminal = value.extract()?,
+                _ => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "Unsupported statevector option {key:?}"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn parse_monolithic_mode(mode: &str) -> PyResult<MonolithicSimulationMode> {
@@ -39,11 +75,19 @@ pub(crate) fn parse_distributed_mode(mode: &str) -> PyResult<DistributedSimulati
 pub(crate) fn parse_mps_options(options: Option<&Bound<PyDict>>) -> PyResult<MpsOptions> {
     let mut max_bond_dimension = None;
     let mut truncation_threshold: f64 = 1e-12;
+    let mut max_discarded_weight = 0.0;
+    let mut max_memory_mb = 1024;
+    let mut max_parallel_shots = 1;
+    let mut sample_terminal = true;
 
     if let Some(options) = options {
         for (key, value) in options.iter() {
             let key: String = key.extract()?;
             match key.as_str() {
+                "max_discarded_weight" => max_discarded_weight = value.extract()?,
+                "max_memory_mb" => max_memory_mb = value.extract()?,
+                "max_parallel_shots" => max_parallel_shots = value.extract()?,
+                "sample_terminal" => sample_terminal = value.extract()?,
                 "max_bond_dimension" => {
                     max_bond_dimension = parse_max_bond_dimension(&value)?;
                 }
@@ -62,25 +106,11 @@ pub(crate) fn parse_mps_options(options: Option<&Bound<PyDict>>) -> PyResult<Mps
     Ok(MpsOptions {
         max_bond_dimension,
         truncation_threshold,
+        max_discarded_weight,
+        max_memory_mb,
+        max_parallel_shots,
+        sample_terminal,
     })
-}
-
-pub(crate) fn reject_monolithic_options(
-    options: Option<&Bound<PyDict>>,
-    mode: &str,
-) -> PyResult<()> {
-    if let Some(options) = options {
-        if !options.is_empty() {
-            let keys: Vec<String> = options
-                .iter()
-                .map(|(key, _)| key.extract())
-                .collect::<PyResult<_>>()?;
-            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "Options {keys:?} are not supported for monolithic mode {mode:?}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn parse_max_bond_dimension(value: &Bound<PyAny>) -> PyResult<Option<usize>> {
@@ -105,4 +135,79 @@ fn parse_truncation_threshold(value: &Bound<PyAny>) -> PyResult<f64> {
         ));
     }
     Ok(truncation_threshold)
+}
+
+pub(crate) struct PBlockOptions {
+    pub max_memory_mb: usize,
+    pub max_block_qubits: Option<usize>,
+    pub max_parallel_shots: usize,
+    pub sample_terminal: bool,
+    pub split_separable: bool,
+    pub max_split_qubits: usize,
+    pub separation_tolerance: f64,
+}
+pub(crate) fn parse_pblock_options(options: Option<&Bound<PyDict>>) -> PyResult<PBlockOptions> {
+    let mut out = PBlockOptions {
+        max_memory_mb: 1024,
+        max_block_qubits: None,
+        max_parallel_shots: 1,
+        sample_terminal: true,
+        split_separable: false,
+        max_split_qubits: 12,
+        separation_tolerance: 0.0,
+    };
+    if let Some(options) = options {
+        for (key, value) in options.iter() {
+            let key: String = key.extract()?;
+            match key.as_str() {
+                "max_memory_mb" => out.max_memory_mb = value.extract()?,
+                "max_block_qubits" => out.max_block_qubits = value.extract()?,
+                "max_parallel_shots" => out.max_parallel_shots = value.extract()?,
+                "sample_terminal" => out.sample_terminal = value.extract()?,
+                "split_separable" => out.split_separable = value.extract()?,
+                "max_split_qubits" => out.max_split_qubits = value.extract()?,
+                "separation_tolerance" => out.separation_tolerance = value.extract()?,
+                _ => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "Unsupported P-block option {key:?}"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) struct StabilizerOptions {
+    pub max_memory_mb: usize,
+    pub max_parallel_shots: usize,
+    pub sample_terminal: bool,
+    pub clifford_tolerance: f64,
+}
+pub(crate) fn parse_stabilizer_options(
+    options: Option<&Bound<PyDict>>,
+) -> PyResult<StabilizerOptions> {
+    let mut out = StabilizerOptions {
+        max_memory_mb: 1024,
+        max_parallel_shots: 1,
+        sample_terminal: true,
+        clifford_tolerance: 0.0,
+    };
+    if let Some(options) = options {
+        for (key, value) in options.iter() {
+            let key: String = key.extract()?;
+            match key.as_str() {
+                "max_memory_mb" => out.max_memory_mb = value.extract()?,
+                "max_parallel_shots" => out.max_parallel_shots = value.extract()?,
+                "sample_terminal" => out.sample_terminal = value.extract()?,
+                "clifford_tolerance" => out.clifford_tolerance = value.extract()?,
+                _ => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "Unsupported stabilizer option {key:?}"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(out)
 }
