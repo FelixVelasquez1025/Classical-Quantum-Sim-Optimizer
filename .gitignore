@@ -3,12 +3,21 @@ __pycache__/
 .venv/
 .env
 build/
+dist/
 .dist/
 *.so
 *.dylib
 *.egg-info/
-.venv/
 .maturin/
 /target/
 /dqsim_profiles/
 /.pytest_cache/
+
+# Private research workspace and legacy paths to local artifacts.
+/local/
+/data
+/datasets
+
+# Editor/OS files and optional local tooling.
+.DS_Store
+node_modules/

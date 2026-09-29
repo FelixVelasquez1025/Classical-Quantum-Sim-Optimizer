@@ -2,6 +2,8 @@
 name = "dqsim"
 version = "0.1.2"
 edition = "2021"
+description = "Rust-backed statevector, MPS, P-block and stabilizer quantum circuit simulators."
+license = "MIT"
 
 [lib]
 name = "_core"
