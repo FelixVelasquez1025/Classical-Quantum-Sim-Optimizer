@@ -34,3 +34,8 @@ __all__ = [
     "simulate_monolithic",
     "simulate_monolithic_shots",
 ]
+
+# Parser dependencies are loaded only when an import helper is called.
+from .qasm import ImportedCircuit, QASMImportError, from_qiskit, load_qasm
+
+__all__ += ["ImportedCircuit", "QASMImportError", "from_qiskit", "load_qasm"]
