@@ -452,3 +452,10 @@ RAYON_NUM_THREADS=4 .venv/bin/python benchmarks/stabilizer_benchmark.py
 before/after comparisons. Profiling is disabled; each case has a warm-up and five
 timed repetitions by default. These focused timings are not selector training
 labels or general performance guarantees.
+
+## References
+
+See [simulator background](references.md#simulator-background) for the
+Aaronson–Gottesman tableau and Vidal's low-entanglement simulation work, and
+[software credits](references.md#software-used-by-this-project) for Qiskit and
+other libraries used in implementation, validation and benchmarking.

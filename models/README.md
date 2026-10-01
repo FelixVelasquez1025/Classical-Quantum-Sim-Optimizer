@@ -19,8 +19,9 @@ also apply. Scores are uncalibrated.
 
 ## Training scope and measured performance
 
-Training used QASMBench and PennyLane's MQT Bench circuits, with related circuit
-families kept together in validation. The data contains 395 observed circuits,
+Training used [QASMBench](../docs/references.md#qasmbench) and
+[MQT Bench circuits distributed by PennyLane](../docs/references.md#pennylane-dataset-distribution),
+with related circuit families kept together in validation. The data contains 395 observed circuits,
 370 with resolved winner labels. Measurements used macOS arm64, four native
 threads, 1,000 shots, five timed repetitions, and a 1 GiB backend working-memory
 setting. That setting is not a total process-memory cap.
@@ -61,3 +62,24 @@ families during development limits the strength of generalization claims.
 
 Raw datasets, machine-specific training paths, diagnostic reports, alternative
 models and tuning history are not included in this model artifact.
+
+## Source provenance
+
+- **QASMBench:** [upstream revision
+  `357b942396d5c2b7cbc1c229c585a6ef5ccaebac`](https://github.com/pnnl/QASMBench/tree/357b942396d5c2b7cbc1c229c585a6ef5ccaebac).
+- **MQT Bench via PennyLane:** hosted `mqt-bench` snapshot, HTTP Last-Modified
+  `Mon, 29 Apr 2024 21:55:36 GMT`, ETag
+  `"50b0281166cd7005c2d69f2a41158ebb-1009"`, as saved in the import manifests.
+  This is a hosted-snapshot identifier, not an MQT Git commit or content hash.
+  The upstream Git revision of that snapshot was not recorded.
+- **Conversion:** QASMBench inputs were normalized to the shared one-/two-qubit
+  format. The PennyLane subset exporter decomposed operations, removed global
+  phases where needed (preserving measurement probabilities), and appended
+  terminal measurements on all wires. These are project-prepared sampling
+  variants of the source circuits. The public QASM importer itself does not add
+  measurements automatically.
+
+[Full citations and dataset/software credits](../docs/references.md) identify
+both the original benchmark authors and the PennyLane distribution. Model
+accuracy and runtime labels are project measurements, not results reported by
+those upstream publications.

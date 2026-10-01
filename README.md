@@ -120,6 +120,16 @@ guarantee; see the [model card](models/README.md) for scope and limitations.
 Alternative models, experiment runners, internal reports and local datasets are excluded
 from version control. Public code and tests do not require that workspace.
 
+## Data sources and acknowledgments
+
+Training circuits were drawn from [QASMBench](https://github.com/pnnl/QASMBench)
+and [MQT Bench](https://github.com/munich-quantum-toolkit/bench), with MQT circuits
+obtained through [PennyLane's hosted dataset](https://pennylane.ai/datasets/single-dataset/mqt-bench).
+We credit the upstream circuit authors and PennyLane's dataset distribution.
+The benchmark timings and model evaluation are this project's measurements.
+See [references and acknowledgments](docs/references.md) for paper citations,
+software credits and [BibTeX entries](docs/references.bib).
+
 ## License
 
 This project is available under the [MIT license](LICENSE).

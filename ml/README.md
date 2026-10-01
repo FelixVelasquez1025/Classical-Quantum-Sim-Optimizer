@@ -103,3 +103,12 @@ original winner ranking, separate memory scores, exclusions and workload
 settings. Scores are uncalibrated. Unsupported tasks or removal of all eligible
 candidates cause explicit abstention. Run the selected simulator through the
 `dqsim` API; this CLI performs selection only.
+
+## Circuit attribution
+
+The bundled model uses QASMBench and the PennyLane-hosted MQT Bench collection.
+See the [source citations](../docs/references.md#circuit-sources) and
+[model provenance](../models/README.md#source-provenance). For your own collections,
+retain upstream circuit authorship, source versions and applicable notices
+alongside the generated manifests. A timing label is this project's measurement;
+it does not transfer authorship of the underlying circuit.
